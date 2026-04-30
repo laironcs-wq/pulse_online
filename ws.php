@@ -4,15 +4,21 @@ declare(strict_types=1);
 
 const WS_HOST = '0.0.0.0';
 const WS_PORT = 8081;
-const BACKEND_HOST = '127.0.0.1';
+const BACKEND_HOST = '0.0.0.0';
 const BACKEND_PORT = 8091;
 const EVENT_LOG_PATH = __DIR__ . '/data/ws_events.log';
+
+$wsHost = getenv('PULSE_WS_HOST') ?: WS_HOST;
+$wsPort = (int) (getenv('PULSE_WS_PORT') ?: WS_PORT);
+$backendHost = getenv('PULSE_WS_BACKEND_BIND_HOST') ?: BACKEND_HOST;
+$backendPort = (int) (getenv('PULSE_WS_BACKEND_BIND_PORT') ?: BACKEND_PORT);
+$eventLogEnabled = (getenv('PULSE_WS_EVENT_LOG_ENABLED') ?: '1') !== '0';
 
 set_time_limit(0);
 error_reporting(E_ALL);
 
 $wsServer = stream_socket_server(
-    'tcp://' . WS_HOST . ':' . WS_PORT,
+    'tcp://' . $wsHost . ':' . $wsPort,
     $wsErrNo,
     $wsErrStr
 );
@@ -23,7 +29,7 @@ if ($wsServer === false) {
 stream_set_blocking($wsServer, false);
 
 $backendServer = stream_socket_server(
-    'tcp://' . BACKEND_HOST . ':' . BACKEND_PORT,
+    'tcp://' . $backendHost . ':' . $backendPort,
     $beErrNo,
     $beErrStr
 );
@@ -36,11 +42,11 @@ stream_set_blocking($backendServer, false);
 $clients = [];
 $socketToClient = [];
 $backendPeers = [];
-$lastLogOffset = is_file(EVENT_LOG_PATH) ? filesize(EVENT_LOG_PATH) : 0;
+$lastLogOffset = ($eventLogEnabled && is_file(EVENT_LOG_PATH)) ? filesize(EVENT_LOG_PATH) : 0;
 $lastLogCheckAt = microtime(true);
 
-echo "Pulse WS server listening on ws://" . WS_HOST . ':' . WS_PORT . PHP_EOL;
-echo "Backend event channel on tcp://" . BACKEND_HOST . ':' . BACKEND_PORT . PHP_EOL;
+echo "Pulse WS server listening on ws://" . $wsHost . ':' . $wsPort . PHP_EOL;
+echo "Backend event channel on tcp://" . $backendHost . ':' . $backendPort . PHP_EOL;
 
 while (true) {
     $read = [$wsServer, $backendServer];
@@ -102,7 +108,7 @@ while (true) {
     }
 
     $now = microtime(true);
-    if (($now - $lastLogCheckAt) >= 0.5) {
+    if ($eventLogEnabled && ($now - $lastLogCheckAt) >= 0.5) {
         $lastLogCheckAt = $now;
         $lastLogOffset = processLogEvents($lastLogOffset, $clients);
     }
