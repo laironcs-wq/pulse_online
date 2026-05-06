@@ -6,10 +6,10 @@ const WS_HOST = '0.0.0.0';
 const WS_PORT = 8081;
 const BACKEND_HOST = '0.0.0.0';
 const BACKEND_PORT = 8091;
-const WS_TLS_ENABLED = (getenv('PULSE_WS_TLS_ENABLED') ?: '0') === '1';
-const WS_CERT_FILE = __DIR__ . '/etc/letsencrypt/live/pulse-ws.ru/fullchain.pem';
-const WS_KEY_FILE = __DIR__ . '/etc/letsencrypt/live/pulse-ws.ru/privkey.pem';
-const WS_KEY_PASSPHRASE = (string) (getenv('PULSE_WS_KEY_PASSPHRASE') ?: '');
+define('WS_TLS_ENABLED', (getenv('PULSE_WS_TLS_ENABLED') ?: '0') === '1');
+define('WS_CERT_FILE', __DIR__ . '/certs/ws-cert.pem');
+define('WS_KEY_FILE', __DIR__ . '/certs/ws-key.pem');
+define('WS_KEY_PASSPHRASE', (string) (getenv('PULSE_WS_KEY_PASSPHRASE') ?: ''));
 
 set_time_limit(0);
 error_reporting(E_ALL);
