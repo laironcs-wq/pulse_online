@@ -6,18 +6,61 @@ const WS_HOST = '0.0.0.0';
 const WS_PORT = 8081;
 const BACKEND_HOST = '0.0.0.0';
 const BACKEND_PORT = 8091;
-const EVENT_LOG_PATH = __DIR__ . '/data/ws_events.log';
+define('WS_TLS_ENABLED', (getenv('PULSE_WS_TLS_ENABLED') ?: '0') === '1');
+define('WS_CERT_FILE', getenv('PULSE_WS_CERT_FILE') ?: (__DIR__ . '/certs/ws-cert.pem'));
+define('WS_KEY_FILE', getenv('PULSE_WS_KEY_FILE') ?: (__DIR__ . '/certs/ws-key.pem'));
+define('WS_COMBINED_PEM_FILE', getenv('PULSE_WS_COMBINED_PEM_FILE') ?: (__DIR__ . '/certs/ws.pem'));
+define('WS_KEY_PASSPHRASE', (string) (getenv('PULSE_WS_KEY_PASSPHRASE') ?: ''));
 
 set_time_limit(0);
 error_reporting(E_ALL);
 
-$wsServer = stream_socket_server(
-    'tcp://' . WS_HOST . ':' . WS_PORT,
-    $wsErrNo,
-    $wsErrStr
-);
+if (WS_TLS_ENABLED) {
+    $useCombinedPem = is_file(WS_COMBINED_PEM_FILE);
+    if (!$useCombinedPem && (!is_file(WS_CERT_FILE) || !is_file(WS_KEY_FILE))) {
+        fwrite(STDERR, "TLS enabled but certificate files not found:\n" .
+            "COMBINED_PEM: " . WS_COMBINED_PEM_FILE . "\n" .
+            "CERT: " . WS_CERT_FILE . "\nKEY: " . WS_KEY_FILE . "\n");
+        exit(1);
+    }
+    $sslOptions = [
+        'allow_self_signed' => true,
+        'verify_peer' => false,
+        'verify_peer_name' => false,
+        'crypto_method' => STREAM_CRYPTO_METHOD_TLS_SERVER,
+    ];
+    if ($useCombinedPem) {
+        // Combined PEM should contain both certificate chain and private key.
+        $sslOptions['local_cert'] = WS_COMBINED_PEM_FILE;
+    } else {
+        $sslOptions['local_cert'] = WS_CERT_FILE;
+        $sslOptions['local_pk'] = WS_KEY_FILE;
+    }
+    if (WS_KEY_PASSPHRASE !== '') {
+        $sslOptions['passphrase'] = WS_KEY_PASSPHRASE;
+    }
+    $wsContext = stream_context_create(['ssl' => $sslOptions]);
+    $wsServer = stream_socket_server(
+        'tls://' . WS_HOST . ':' . WS_PORT,
+        $wsErrNo,
+        $wsErrStr,
+        STREAM_SERVER_BIND | STREAM_SERVER_LISTEN,
+        $wsContext
+    );
+} else {
+    $wsServer = stream_socket_server(
+        'tcp://' . WS_HOST . ':' . WS_PORT,
+        $wsErrNo,
+        $wsErrStr
+    );
+}
 if ($wsServer === false) {
     fwrite(STDERR, "WS server start failed: {$wsErrStr} ({$wsErrNo})\n");
+    if (WS_TLS_ENABLED) {
+        while (($sslErr = openssl_error_string()) !== false) {
+            fwrite(STDERR, "OpenSSL: {$sslErr}\n");
+        }
+    }
     exit(1);
 }
 stream_set_blocking($wsServer, false);
@@ -36,10 +79,8 @@ stream_set_blocking($backendServer, false);
 $clients = [];
 $socketToClient = [];
 $backendPeers = [];
-$lastLogOffset = is_file(EVENT_LOG_PATH) ? filesize(EVENT_LOG_PATH) : 0;
-$lastLogCheckAt = microtime(true);
 
-echo "Pulse WS server listening on ws://" . WS_HOST . ':' . WS_PORT . PHP_EOL;
+echo "Pulse WS server listening on " . (WS_TLS_ENABLED ? 'wss://' : 'ws://') . WS_HOST . ':' . WS_PORT . PHP_EOL;
 echo "Backend event channel on tcp://" . BACKEND_HOST . ':' . BACKEND_PORT . PHP_EOL;
 
 while (true) {
@@ -71,6 +112,7 @@ while (true) {
                     'handshake_done' => false,
                     'handshake_buffer' => '',
                     'buffer' => '',
+                    'fragment_buffer' => null,
                     'user_id' => null,
                     'watch_chat' => null,
                 ];
@@ -101,11 +143,6 @@ while (true) {
         }
     }
 
-    $now = microtime(true);
-    if (($now - $lastLogCheckAt) >= 0.5) {
-        $lastLogCheckAt = $now;
-        $lastLogOffset = processLogEvents($lastLogOffset, $clients);
-    }
 }
 
 function handleClientRead(array &$clients, array &$socketToClient, int $id): void
@@ -144,7 +181,7 @@ function handleClientRead(array &$clients, array &$socketToClient, int $id): voi
         $clients[$id]['buffer'] .= $chunk;
     }
 
-    $messages = decodeWsFramesFromBuffer($clients[$id]['buffer']);
+    $messages = decodeWsFramesFromBuffer($clients[$id]['buffer'], $clients[$id]['fragment_buffer']);
     foreach ($messages as $message) {
         processClientMessage($clients, $id, $message);
     }
@@ -177,43 +214,6 @@ function handleBackendRead(array &$backendPeers, int $peerId, array &$clients): 
             dispatchEvent($clients, $event);
         }
     }
-}
-
-function processLogEvents(int $offset, array &$clients): int
-{
-    if (!is_file(EVENT_LOG_PATH)) {
-        return 0;
-    }
-
-    $size = filesize(EVENT_LOG_PATH);
-    if ($size === false) {
-        return $offset;
-    }
-    if ($size < $offset) {
-        $offset = 0;
-    }
-    if ($size === $offset) {
-        return $offset;
-    }
-
-    $fp = fopen(EVENT_LOG_PATH, 'rb');
-    if ($fp === false) {
-        return $offset;
-    }
-    fseek($fp, $offset);
-    while (($line = fgets($fp)) !== false) {
-        $line = trim($line);
-        if ($line === '') {
-            continue;
-        }
-        $event = json_decode($line, true);
-        if (is_array($event)) {
-            dispatchEvent($clients, $event);
-        }
-    }
-    $newOffset = ftell($fp);
-    fclose($fp);
-    return is_int($newOffset) ? $newOffset : $offset;
 }
 
 function processClientMessage(array &$clients, int $clientId, string $raw): void
@@ -326,7 +326,7 @@ function performHandshake($socket, string $request): bool
     return @fwrite($socket, $response) !== false;
 }
 
-function decodeWsFramesFromBuffer(string &$buffer): array
+function decodeWsFramesFromBuffer(string &$buffer, ?string &$fragmentBuffer): array
 {
     $messages = [];
     $offset = 0;
@@ -372,8 +372,21 @@ function decodeWsFramesFromBuffer(string &$buffer): array
             $payload = $decoded;
         }
 
-        if ($opcode === 0x1 && $fin) {
-            $messages[] = $payload;
+        if ($opcode === 0x1) {
+            if ($fin) {
+                $messages[] = $payload;
+                $fragmentBuffer = null;
+            } else {
+                $fragmentBuffer = $payload;
+            }
+        } elseif ($opcode === 0x0) {
+            if ($fragmentBuffer !== null) {
+                $fragmentBuffer .= $payload;
+                if ($fin) {
+                    $messages[] = $fragmentBuffer;
+                    $fragmentBuffer = null;
+                }
+            }
         } elseif ($opcode === 0x8) {
             break;
         }
