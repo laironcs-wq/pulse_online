@@ -6,45 +6,15 @@ const WS_HOST = '0.0.0.0';
 const WS_PORT = 8081;
 const BACKEND_HOST = '0.0.0.0';
 const BACKEND_PORT = 8091;
-define('WS_TLS_ENABLED', (getenv('PULSE_WS_TLS_ENABLED') ?: '0') === '1');
-define('WS_CERT_FILE', __DIR__ . '/certs/ws-cert.pem');
-define('WS_KEY_FILE', __DIR__ . '/certs/ws-key.pem');
-define('WS_KEY_PASSPHRASE', (string) (getenv('PULSE_WS_KEY_PASSPHRASE') ?: ''));
 
 set_time_limit(0);
 error_reporting(E_ALL);
 
-if (WS_TLS_ENABLED) {
-    if (!is_file(WS_CERT_FILE) || !is_file(WS_KEY_FILE)) {
-        fwrite(STDERR, "TLS enabled but certificate files not found:\n" .
-            "CERT: " . WS_CERT_FILE . "\nKEY: " . WS_KEY_FILE . "\n");
-        exit(1);
-    }
-    $sslOptions = [
-        'local_cert' => WS_CERT_FILE,
-        'local_pk' => WS_KEY_FILE,
-        'allow_self_signed' => true,
-        'verify_peer' => false,
-        'verify_peer_name' => false,
-    ];
-    if (WS_KEY_PASSPHRASE !== '') {
-        $sslOptions['passphrase'] = WS_KEY_PASSPHRASE;
-    }
-    $wsContext = stream_context_create(['ssl' => $sslOptions]);
-    $wsServer = stream_socket_server(
-        'tls://' . WS_HOST . ':' . WS_PORT,
-        $wsErrNo,
-        $wsErrStr,
-        STREAM_SERVER_BIND | STREAM_SERVER_LISTEN,
-        $wsContext
-    );
-} else {
-    $wsServer = stream_socket_server(
-        'tcp://' . WS_HOST . ':' . WS_PORT,
-        $wsErrNo,
-        $wsErrStr
-    );
-}
+$wsServer = stream_socket_server(
+    'tcp://' . WS_HOST . ':' . WS_PORT,
+    $wsErrNo,
+    $wsErrStr
+);
 if ($wsServer === false) {
     fwrite(STDERR, "WS server start failed: {$wsErrStr} ({$wsErrNo})\n");
     exit(1);
@@ -66,7 +36,7 @@ $clients = [];
 $socketToClient = [];
 $backendPeers = [];
 
-echo "Pulse WS server listening on " . (WS_TLS_ENABLED ? 'wss://' : 'ws://') . WS_HOST . ':' . WS_PORT . PHP_EOL;
+echo "Pulse WS server listening on ws://" . WS_HOST . ':' . WS_PORT . PHP_EOL;
 echo "Backend event channel on tcp://" . BACKEND_HOST . ':' . BACKEND_PORT . PHP_EOL;
 
 while (true) {
