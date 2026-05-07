@@ -6,6 +6,7 @@ const WS_HOST = '0.0.0.0';
 const WS_PORT = 8081;
 const BACKEND_HOST = '0.0.0.0';
 const BACKEND_PORT = 8091;
+const EVENT_LOG_PATH = __DIR__ . '/data/ws_events.log';
 
 set_time_limit(0);
 error_reporting(E_ALL);
@@ -35,6 +36,8 @@ stream_set_blocking($backendServer, false);
 $clients = [];
 $socketToClient = [];
 $backendPeers = [];
+$lastLogOffset = is_file(EVENT_LOG_PATH) ? filesize(EVENT_LOG_PATH) : 0;
+$lastLogCheckAt = microtime(true);
 
 echo "Pulse WS server listening on ws://" . WS_HOST . ':' . WS_PORT . PHP_EOL;
 echo "Backend event channel on tcp://" . BACKEND_HOST . ':' . BACKEND_PORT . PHP_EOL;
@@ -98,6 +101,11 @@ while (true) {
         }
     }
 
+    $now = microtime(true);
+    if (($now - $lastLogCheckAt) >= 0.5) {
+        $lastLogCheckAt = $now;
+        $lastLogOffset = processLogEvents($lastLogOffset, $clients);
+    }
 }
 
 function handleClientRead(array &$clients, array &$socketToClient, int $id): void
@@ -169,6 +177,43 @@ function handleBackendRead(array &$backendPeers, int $peerId, array &$clients): 
             dispatchEvent($clients, $event);
         }
     }
+}
+
+function processLogEvents(int $offset, array &$clients): int
+{
+    if (!is_file(EVENT_LOG_PATH)) {
+        return 0;
+    }
+
+    $size = filesize(EVENT_LOG_PATH);
+    if ($size === false) {
+        return $offset;
+    }
+    if ($size < $offset) {
+        $offset = 0;
+    }
+    if ($size === $offset) {
+        return $offset;
+    }
+
+    $fp = fopen(EVENT_LOG_PATH, 'rb');
+    if ($fp === false) {
+        return $offset;
+    }
+    fseek($fp, $offset);
+    while (($line = fgets($fp)) !== false) {
+        $line = trim($line);
+        if ($line === '') {
+            continue;
+        }
+        $event = json_decode($line, true);
+        if (is_array($event)) {
+            dispatchEvent($clients, $event);
+        }
+    }
+    $newOffset = ftell($fp);
+    fclose($fp);
+    return is_int($newOffset) ? $newOffset : $offset;
 }
 
 function processClientMessage(array &$clients, int $clientId, string $raw): void
